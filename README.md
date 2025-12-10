@@ -51,7 +51,7 @@ make install
 ### Basic Execution
 
 ```python
-from isolated_lua_vm import IsolatedLuaVM
+from luaward import IsolatedLuaVM
 
 # Create a VM with a 10MB memory limit
 vm = IsolatedLuaVM(memory_limit=10 * 1024 * 1024)
