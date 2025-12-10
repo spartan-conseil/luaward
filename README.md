@@ -20,11 +20,31 @@ LuaWard allows you to execute Lua scripts from Python in a **secure**, **process
 
 ## Installation
 
+LuaWard must be installed from source. You will need a C compiler (gcc) installed.
+
+### From Source
+
+Clone the repository and install using pip:
+
 ```bash
-pip install luaward
+git clone https://github.com/luaward/luaward.git
+cd luaward
+pip install .
 ```
 
-*Note: LuaWard compiles Lua 5.4 from source during installation. You will need a C compiler (gcc) installed.*
+For development (editable mode):
+
+```bash
+pip install -e .
+```
+
+### Using Makefile
+
+You can also use the provided Makefile:
+
+```bash
+make install
+```
 
 ## Usage
 
