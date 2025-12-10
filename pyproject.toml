@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luaward"
+version = "1.0.0"
+description = "A secure, isolated, and memory-limited Lua 5.4 VM binding for Python."
+readme = "README.md"
+authors = [
+  { name = "Your Name", email = "your.email@example.com" },
+]
+license = { text = "MIT" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Interpreters",
+]
+keywords = ["lua", "sandbox", "vm", "isolation", "security"]
+dependencies = []
+requires-python = ">=3.7"
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/luaward"
+"Bug Tracker" = "https://github.com/yourusername/luaward/issues"

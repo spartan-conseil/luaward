@@ -1,0 +1,9 @@
+build/
+__pycache__/
+lua-5.4.7/
+pylua.cpython-*
+lua-*.tar.gz
+.env/
+luaward.egg-info/
+dist/
+*.so
