@@ -225,23 +225,173 @@ static int LuaVM_init(LuaVM *self, PyObject *args, PyObject *kwds) {
     lua_State *L = self->L;
 
     // Sandbox setup
+    // Method: Load libraries without registering them globally (glb=0)
+    // Then assume control of _G.
+
+    // 1. Basic library
+    // We can't avoid loading some basic stuff into _G because luaopen_base does it.
+    // However, we can clear _G afterwards and only put back what we want.
+    // Actually, luaopen_base sets _G fields directly.
+    
+    // Strategy: Create a fresh environment table, populate it, and set it as _G?
+    // Or just clean up _G.
+    
+    // Let's rely on manual population.
+    
+    // Initialize standard _G (base) to get basics, then we strip it.
     luaL_requiref(L, "_G", luaopen_base, 1);
     lua_pop(L, 1);
-    luaL_requiref(L, LUA_TABLIBNAME, luaopen_table, 1);
-    lua_pop(L, 1);
-    luaL_requiref(L, LUA_STRLIBNAME, luaopen_string, 1);
-    lua_pop(L, 1);
-    luaL_requiref(L, LUA_MATHLIBNAME, luaopen_math, 1);
-    lua_pop(L, 1);
-    luaL_requiref(L, LUA_UTF8LIBNAME, luaopen_utf8, 1);
-    lua_pop(L, 1);
 
-    const char* prohibited[] = {
-        "dofile", "loadfile", "load", "module", "require", NULL
+    // List of allowed globals (from base)
+    const char *base_whitelist[] = {
+        "assert", "error", "ipairs", "next", "pairs", "pcall", "print", 
+        "select", "tonumber", "tostring", "type", "xpcall", "_VERSION", NULL
     };
-    for (int i = 0; prohibited[i] != NULL; i++) {
+    
+    // Allowlist approach:
+    // Create new table, copy allowlisted items from _G to it, then replace _G?
+    // Or easier: Iterate over _G and remove anything not in whitelist.
+    
+    lua_pushglobaltable(L); // Push _G
+    lua_pushnil(L);         // First key
+    while (lua_next(L, -2) != 0) {
+        // key at -2, value at -1
+        // We only care if key is string
+        if (lua_type(L, -2) == LUA_TSTRING) {
+            const char *key = lua_tostring(L, -2);
+            int kept = 0;
+            for (int i = 0; base_whitelist[i] != NULL; i++) {
+                if (strcmp(key, base_whitelist[i]) == 0) {
+                    kept = 1;
+                    break;
+                }
+            }
+            if (!kept) {
+                 // Remove it: _G[key] = nil
+                 // We can't do it while iterating easily. 
+                 // Actually we can, but it is risky in some languages. In Lua it is generally safe during next?
+                 // Safer: Build a list of keys to remove.
+            }
+        }
+        lua_pop(L, 1); // Pop value
+    }
+    lua_pop(L, 1); // Pop _G
+
+    // BETTER STRATEGY: 
+    // 1. Create a "sandbox" table.
+    // 2. Populate it.
+    // 3. Set it as _G.
+
+    // But luaopen_base writes to the global table directly. 
+    // So let's let it run, then we SCRUB the global table.
+    
+    // To Scrub:
+    // We will construct a list of keys to KEEP. 
+    // Then we clear everything else. 
+    // Wait, clearing everything else is hard if we don't know what's there.
+    // WE DO know what's there: whatever luaopen_base put + pre-existing?
+    
+    // Even Better:
+    // 1. lua_newtable(L) -> sandbox
+    // 2. Open libs into it.
+    
+    // Actually, simple scrub:
+    // Remove known dangerous globals explicitly first.
+    // "dofile", "load", "loadfile", "require", "module", "collectgarbage", "getmetatable", "setmetatable", "rawequal", "rawget", "rawlen", "rawset"
+    const char *blacklist[] = {
+        "dofile", "load", "loadfile", "require", "module", "collectgarbage", 
+        "getmetatable", "setmetatable", "rawequal", "rawget", "rawlen", "rawset",
+        "io", "os", "debug", "package", "coroutine", 
+        NULL
+    };
+
+    for (int i = 0; blacklist[i] != NULL; i++) {
         lua_pushnil(L);
-        lua_setglobal(L, prohibited[i]);
+        lua_setglobal(L, blacklist[i]);
+    }
+
+    // Now load libraries into their namespaces manually to ensure we control content.
+    
+    // Helper to load lib and filter
+    void load_lib_filtered(lua_State *L, const char *libname, lua_CFunction openf, const char **whitelist) {
+        luaL_requiref(L, libname, openf, 0); // push lib to stack, don't set global
+        // Stack: [lib_table]
+        
+        // Create new table for the filtered lib
+        lua_newtable(L);
+        // Stack: [lib_table, filtered_table]
+        
+        for (int i = 0; whitelist[i] != NULL; i++) {
+            lua_getfield(L, -2, whitelist[i]); // Get from lib_table
+            // Stack: [lib_table, filtered_table, func]
+            if (!lua_isnil(L, -1)) {
+                lua_setfield(L, -2, whitelist[i]); // Set to filtered_table
+            } else {
+                lua_pop(L, 1); // Pop nil
+            }
+        }
+        
+        // Remove the full lib table
+        lua_remove(L, -2); // Stack: [filtered_table]
+        
+        // Set it as global variable
+        lua_setglobal(L, libname);
+    }
+    
+    const char *table_whitelist[] = {"concat", "insert", "move", "pack", "remove", "sort", "unpack", NULL};
+    load_lib_filtered(L, "table", luaopen_table, table_whitelist);
+    
+    const char *string_whitelist[] = {
+        "byte", "char", "find", "format", "gmatch", "gsub", "len", "lower", 
+        "match", "rep", "reverse", "sub", "upper", NULL
+    };
+    load_lib_filtered(L, "string", luaopen_string, string_whitelist);
+    
+    const char *math_whitelist[] = {
+        "abs", "acos", "asin", "atan", "ceil", "cos", "deg", "exp", "floor", 
+        "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", 
+        "randomseed", "sin", "sqrt", "tan", "tointeger", "type", "ult", NULL
+    };
+    load_lib_filtered(L, "math", luaopen_math, math_whitelist);
+    
+    const char *utf8_whitelist[] = {"char", "codes", "codepoint", "len", "offset", NULL};
+    load_lib_filtered(L, "utf8", luaopen_utf8, utf8_whitelist);
+
+    // Filter _G (base) explicitly again to be sure?
+    // We already did blacklist. Let's do whitelist on _G too?
+    // It's cleaner to blacklist the base lib dangerous functions because base lib puts them in root.
+    // Whitelist for _G is hard because it contains _G itself, etc.
+    // The blacklist above covers the dangerous base functions.
+    // Plus we haven't loaded io, os, debug at all.
+    
+    // One more thing: string metatable. 
+    // Strings in Lua have a metatable pointing to string library.
+    // luaopen_string sets this. 
+    // Since we filtered "string" global, scripts can't access full string lib via 'string'.
+    // BUT they can do ("foo"):dump() if the metatable points to the ORIGINAL string lib!
+    // Lua 5.4 luaopen_string sets the string metatable to the table it returns.
+    // The table it returns is the FULL table.
+    // So we must fix the string metatable to point to our filtered table.
+    
+    lua_getglobal(L, "string"); // Our filtered table
+    lua_pushstring(L, "");      // A string
+    lua_getmetatable(L, -1);    // The current metatable (the full lib) or nil
+    if (!lua_istable(L, -1)) {
+        // Create one if missing (unlikely)
+        lua_pop(L, 1);
+        lua_createtable(L, 0, 0); 
+    }
+    // Actually we want to SET `__index` of the string metatable to our filtered lib.
+    // Wait, the string library IS the `__index` of the string metatable usually.
+    
+    // Let's protect strings:
+    lua_pushstring(L, "");
+    if (lua_getmetatable(L, -1)) { // Pushes metatable
+        lua_getglobal(L, "string"); // Pushes filtered string lib
+        lua_setfield(L, -2, "__index"); // mt.__index = filtered_string
+        lua_pop(L, 2); // pop string and metatable
+    } else {
+         lua_pop(L, 1); // pop string
     }
     
     // Register callbacks from dict
