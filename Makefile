@@ -27,3 +27,7 @@ examples: build
 	PYTHONPATH=. $(PYTHON) examples/callbacks.py
 	@echo "\nRunning Sandboxing Example..."
 	PYTHONPATH=. $(PYTHON) examples/sandboxing.py
+	@echo "\nRunning CPU Limit Example..."
+	PYTHONPATH=. $(PYTHON) examples/cpu_limit.py
+	@echo "\nRunning Secure Execution Example (Note: might need root for full isolation)..."
+	PYTHONPATH=. $(PYTHON) examples/secure_execution.py

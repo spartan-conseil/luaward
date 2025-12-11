@@ -3,6 +3,13 @@
 #include "lauxlib.h"
 #include "lualib.h"
 #include "structmember.h"
+#include <stddef.h> /* for offsetof */
+#include <linux/seccomp.h>
+#include <linux/filter.h>
+#include <linux/audit.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <errno.h>
 
 #define DEFAULT_MAX_MEMORY (5 * 1024 * 1024)
 
@@ -560,12 +567,95 @@ static PyTypeObject LuaVMType = {
     .tp_methods = LuaVM_methods,
 };
 
+static int install_seccomp(void) {
+    struct sock_filter filter[] = {
+        /* Validate architecture to be x86_64 */
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (offsetof(struct seccomp_data, arch))),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL),
+
+        /* Load syscall number */
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (offsetof(struct seccomp_data, nr))),
+
+        /* Denylist dangerous syscalls */
+        /* Execve */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execve, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        
+        /* Execveat */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execveat, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+
+        /* Fork / Clone / Vfork - BE CAREFUL. Python might need clone for threads. 
+           But this is an isolated process. 
+           Let's block fork/vfork, but maybe allow clone if it's thread creation? 
+           For strict isolation we block new process creation. 
+        */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_fork, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_vfork, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        
+        /* Socket */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_socket, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        
+        /* Connect */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_connect, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        
+        /* Bind */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_bind, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+
+        /* Accept */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_accept, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        
+        /* Ptrace */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_ptrace, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+
+        /* Allow everything else */
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    
+    struct sock_fprog prog = {
+        .len = (unsigned short)(sizeof(filter) / sizeof(filter[0])),
+        .filter = filter,
+    };
+
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+        return -1;
+    }
+
+    if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog)) {
+        return -1;
+    }
+    
+    return 0;
+}
+
+static PyObject *luaward_lockdown(PyObject *self, PyObject *args) {
+    if (install_seccomp() < 0) {
+        PyErr_SetFromErrno(PyExc_OSError);
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyMethodDef module_methods[] = {
+    {"lockdown", luaward_lockdown, METH_NOARGS, "Apply seccomp filter to current process"},
+    {NULL, NULL, 0, NULL}
+};
+
 static struct PyModuleDef pyluamodule = {
     PyModuleDef_HEAD_INIT,
     "_luaward",
     "Python interface to Lua",
     -1,
-    NULL
+    module_methods
 };
 
 PyMODINIT_FUNC PyInit__luaward(void) {

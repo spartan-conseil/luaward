@@ -3,10 +3,15 @@ import queue
 import sys
 import io
 import contextlib
+import os
+import ctypes
+import resource
 import _luaward
 
 class IsolatedLuaVM:
-    def __init__(self, memory_limit=None, callbacks=None, instruction_limit=None):
+    def __init__(self, memory_limit=None, callbacks=None, instruction_limit=None, 
+                 uid=None, gid=None, full_isolation=False,
+                 cpu_limit=None):
         self.cmd_queue = multiprocessing.Queue()
         self.result_queue = multiprocessing.Queue()
         
@@ -14,13 +19,61 @@ class IsolatedLuaVM:
         self.callbacks = callbacks or {}
         callback_names = list(self.callbacks.keys())
 
+        # Limits and credentials
+        self.uid = uid
+        self.gid = gid
+        self.full_isolation = full_isolation
+        self.cpu_limit = cpu_limit # CPU time in seconds
+
         self.process = multiprocessing.Process(
             target=self._worker_loop,
-            args=(self.cmd_queue, self.result_queue, memory_limit, callback_names, instruction_limit)
+            args=(self.cmd_queue, self.result_queue, memory_limit, 
+                  callback_names, instruction_limit, 
+                  self.uid, self.gid, self.full_isolation, self.cpu_limit)
         )
         self.process.start()
 
-    def _worker_loop(self, cmd_q, res_q, mem_limit, callback_names, instruction_limit):
+    def _worker_loop(self, cmd_q, res_q, mem_limit, callback_names, instruction_limit, 
+                     uid, gid, full_isolation, cpu_limit):
+        
+        # 1. Network Isolation: unshare(CLONE_NEWNET)
+        if full_isolation:
+            # CLONE_NEWNET = 0x40000000
+            try:
+                libc = ctypes.CDLL(None)
+                if libc.unshare(0x40000000) != 0:
+                    pass
+            except Exception as e:
+                pass
+
+        # 2. Resource Limits
+        if cpu_limit:
+            # Set soft and hard limit for CPU usage (seconds)
+            try:
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
+            except Exception:
+                pass
+
+        # 3. Drop Privileges
+        if gid is not None:
+            try:
+                os.setgid(gid)
+            except Exception:
+                pass
+        if uid is not None:
+             try:
+                os.setuid(uid)
+             except Exception:
+                pass
+
+        # 4. Lockdown (Seccomp)
+        if full_isolation:
+            try:
+                _luaward.lockdown()
+            except Exception as e:
+                res_q.put(('CRITICAL', f"Lockdown failed: {e}"))
+                return
+
         # Create proxy functions for each callback name
         proxies = {}
         for name in callback_names:
