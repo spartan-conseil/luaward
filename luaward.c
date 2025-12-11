@@ -9,6 +9,8 @@
 typedef struct {
     size_t total_allocated;
     size_t max_memory;
+    unsigned long long instruction_count;
+    unsigned long long instruction_limit;
 } MemControl;
 
 static void *l_alloc (void *ud, void *ptr, size_t osize, size_t nsize) {
@@ -29,6 +31,18 @@ static void *l_alloc (void *ud, void *ptr, size_t osize, size_t nsize) {
             mc->total_allocated = mc->total_allocated - osize + nsize;
         }
         return newptr;
+    }
+}
+
+static void instruction_count_hook(lua_State *L, lua_Debug *ar) {
+    MemControl *mc;
+    lua_getallocf(L, (void **)&mc);
+    
+    // We set the hook count to 1000, so we increment by 1000
+    mc->instruction_count += 1000;
+    
+    if (mc->instruction_limit > 0 && mc->instruction_count > mc->instruction_limit) {
+        luaL_error(L, "Instruction limit exceeded");
     }
 }
 
@@ -152,15 +166,19 @@ static int lua_callback_generic(lua_State *L) {
 
 static int LuaVM_init(LuaVM *self, PyObject *args, PyObject *kwds) {
     unsigned long long max_mem = DEFAULT_MAX_MEMORY;
+    unsigned long long instr_limit = 0;
     PyObject *callbacks_dict = NULL;
-    static char *kwlist[] = {"memory_limit", "callbacks", NULL};
+    static char *kwlist[] = {"memory_limit", "callbacks", "instruction_limit", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|KO", kwlist, &max_mem, &callbacks_dict)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|KOK", kwlist, &max_mem, &callbacks_dict, &instr_limit)) {
         return -1;
     }
 
     self->mc.total_allocated = 0;
     self->mc.max_memory = (size_t)max_mem;
+    self->mc.instruction_limit = instr_limit;
+    self->mc.instruction_count = 0;
+    
     self->L = lua_newstate(l_alloc, &self->mc);
 
     if (self->L == NULL) {
@@ -253,11 +271,27 @@ static PyObject *LuaVM_call(LuaVM *self, PyObject *args) {
         }
     }
 
+    // Reset instruction count
+    self->mc.instruction_count = 0;
+    if (self->mc.instruction_limit > 0) {
+        lua_sethook(self->L, instruction_count_hook, LUA_MASKCOUNT, 1000);
+    } else {
+        lua_sethook(self->L, NULL, 0, 0);
+    }
+
     // Call with nargs arguments and 1 return value (supported for now)
     int status = lua_pcall(self->L, nargs, 1, 0);
+    
+    // Disable hook after call
+    lua_sethook(self->L, NULL, 0, 0);
+    
     if (status != LUA_OK) {
         const char *error_msg = lua_tostring(self->L, -1);
-        PyErr_Format(PyExc_RuntimeError, "Lua error: %s", error_msg);
+        if (strcmp(error_msg, "Instruction limit exceeded") == 0) {
+             PyErr_SetString(PyExc_TimeoutError, "Instruction limit exceeded");
+        } else {
+             PyErr_Format(PyExc_RuntimeError, "Lua error: %s", error_msg);
+        }
         lua_pop(self->L, 1);
         return NULL;
     }
@@ -278,10 +312,26 @@ static PyObject *LuaVM_execute(LuaVM *self, PyObject *args) {
         return NULL;
     }
 
+    // Reset instruction count
+    self->mc.instruction_count = 0;
+    if (self->mc.instruction_limit > 0) {
+        lua_sethook(self->L, instruction_count_hook, LUA_MASKCOUNT, 1000);
+    } else {
+        lua_sethook(self->L, NULL, 0, 0);
+    }
+
     int status = luaL_dostring(self->L, script);
+    
+    // Disable hook after execution
+    lua_sethook(self->L, NULL, 0, 0);
+
     if (status != LUA_OK) {
         const char *error_msg = lua_tostring(self->L, -1);
-        PyErr_Format(PyExc_RuntimeError, "Lua error: %s", error_msg);
+        if (strcmp(error_msg, "Instruction limit exceeded") == 0) {
+             PyErr_SetString(PyExc_TimeoutError, "Instruction limit exceeded");
+        } else {
+             PyErr_Format(PyExc_RuntimeError, "Lua error: %s", error_msg);
+        }
         lua_pop(self->L, 1); // Pop error message
         return NULL;
     }

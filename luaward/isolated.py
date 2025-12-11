@@ -6,7 +6,7 @@ import contextlib
 import _luaward
 
 class IsolatedLuaVM:
-    def __init__(self, memory_limit=None, callbacks=None):
+    def __init__(self, memory_limit=None, callbacks=None, instruction_limit=None):
         self.cmd_queue = multiprocessing.Queue()
         self.result_queue = multiprocessing.Queue()
         
@@ -16,11 +16,11 @@ class IsolatedLuaVM:
 
         self.process = multiprocessing.Process(
             target=self._worker_loop,
-            args=(self.cmd_queue, self.result_queue, memory_limit, callback_names)
+            args=(self.cmd_queue, self.result_queue, memory_limit, callback_names, instruction_limit)
         )
         self.process.start()
 
-    def _worker_loop(self, cmd_q, res_q, mem_limit, callback_names):
+    def _worker_loop(self, cmd_q, res_q, mem_limit, callback_names, instruction_limit):
         # Create proxy functions for each callback name
         proxies = {}
         for name in callback_names:
@@ -41,7 +41,14 @@ class IsolatedLuaVM:
             proxies[name] = make_proxy(name)
 
         try:
-            vm = _luaward.LuaVM(memory_limit=mem_limit, callbacks=proxies) if mem_limit else _luaward.LuaVM(callbacks=proxies)
+            # Prepare kwargs for LuaVM
+            kwargs = {'callbacks': proxies}
+            if mem_limit:
+                kwargs['memory_limit'] = mem_limit
+            if instruction_limit:
+                kwargs['instruction_limit'] = instruction_limit
+                
+            vm = _luaward.LuaVM(**kwargs)
         except Exception as e:
             res_q.put(('CRITICAL', f"Init failed: {e}"))
             return
