@@ -17,40 +17,39 @@ static void *l_alloc (void *ud, void *ptr, size_t osize, size_t nsize) {
     MemControl *mc = (MemControl *)ud;
     if (nsize == 0) {
         if (ptr) {
-            // Safe subtraction
-            if (mc->total_allocated >= osize) {
-                 mc->total_allocated -= osize;
+            // Safe subtraction using builtin
+            // size_t subtraction wrapping is "overflow" in these builtins for unsigned types?
+            // Yes, for unsigned, it detects wrap-around (underflow).
+            size_t new_total;
+            if (__builtin_sub_overflow(mc->total_allocated, osize, &new_total)) {
+                // Underflow detected, meaning we are trying to free more than accounted
+                mc->total_allocated = 0;
             } else {
-                 // Should not happen if tracking is correct, but correct it to 0 just in case
-                 mc->total_allocated = 0;
+                mc->total_allocated = new_total;
             }
             free(ptr);
         }
         return NULL;
     }
     else {
-        // Safe addition check: check if adding nsize would overflow
-        // total_new = total_allocated - osize + nsize
-        // We know total_allocated >= 0.
-        // First, if we are reallocating, we theoretically release osize then add nsize.
-        
         // Calculate current baseline
         size_t current_usage = mc->total_allocated;
+        size_t temp_usage;
         if (ptr) {
-             if (current_usage >= osize) {
-                 current_usage -= osize;
-             } else {
-                 current_usage = 0;
+             // We are reallocating, so strictly speaking we free 'osize' then add 'nsize'.
+             // But existing Lua realloc implementations often just look at the diff.
+             // Here we emulate free osize then alloc nsize logic to match total_allocated semantics.
+             if (__builtin_sub_overflow(current_usage, osize, &temp_usage)) {
+                 temp_usage = 0; // Should not happen if accounting is consistent
              }
+             current_usage = temp_usage;
         }
         
-        // Check for overflow before adding nsize
-        if (SIZE_MAX - current_usage < nsize) {
-            // This would overflow size_t
-            return NULL;
+        // Check for overflow when adding nsize
+        size_t new_total;
+        if (__builtin_add_overflow(current_usage, nsize, &new_total)) {
+            return NULL; // Overflow detected
         }
-        
-        size_t new_total = current_usage + nsize;
         
         if (new_total > mc->max_memory) {
             return NULL;
