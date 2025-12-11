@@ -17,18 +17,49 @@ static void *l_alloc (void *ud, void *ptr, size_t osize, size_t nsize) {
     MemControl *mc = (MemControl *)ud;
     if (nsize == 0) {
         if (ptr) {
+            // Safe subtraction
+            if (mc->total_allocated >= osize) {
+                 mc->total_allocated -= osize;
+            } else {
+                 // Should not happen if tracking is correct, but correct it to 0 just in case
+                 mc->total_allocated = 0;
+            }
             free(ptr);
-            mc->total_allocated -= osize;
         }
         return NULL;
     }
     else {
-        if (mc->total_allocated - osize + nsize > mc->max_memory) {
+        // Safe addition check: check if adding nsize would overflow
+        // total_new = total_allocated - osize + nsize
+        // We know total_allocated >= 0.
+        // First, if we are reallocating, we theoretically release osize then add nsize.
+        
+        // Calculate current baseline
+        size_t current_usage = mc->total_allocated;
+        if (ptr) {
+             if (current_usage >= osize) {
+                 current_usage -= osize;
+             } else {
+                 current_usage = 0;
+             }
+        }
+        
+        // Check for overflow before adding nsize
+        if (SIZE_MAX - current_usage < nsize) {
+            // This would overflow size_t
             return NULL;
         }
+        
+        size_t new_total = current_usage + nsize;
+        
+        if (new_total > mc->max_memory) {
+            return NULL;
+        }
+
+        // Proceed with allocation
         void* newptr = realloc(ptr, nsize);
         if (newptr) {
-            mc->total_allocated = mc->total_allocated - osize + nsize;
+            mc->total_allocated = new_total;
         }
         return newptr;
     }
